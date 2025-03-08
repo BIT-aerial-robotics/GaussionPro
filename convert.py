@@ -19,7 +19,7 @@ parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--skip_matching", action='store_true')
 parser.add_argument("--source_path", "-s", required=True, type=str)
-parser.add_argument("--camera", default="OPENCV", type=str)
+parser.add_argument("--camera", default="PINHOLE", type=str)
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
 parser.add_argument("--magick_executable", default="", type=str)
@@ -33,44 +33,79 @@ if not args.skip_matching:
 
     ## Feature extraction
     feat_extracton_cmd = colmap_command + " feature_extractor "\
-        "--database_path " + args.source_path + "/distorted/database.db \
-        --image_path " + args.source_path + "/input \
-        --ImageReader.single_camera 1 \
-        --ImageReader.camera_model " + args.camera + " \
-        --ImageReader.mask_path " + args.source_path + "/mask" + " \
-        --SiftExtraction.use_gpu " + str(use_gpu)
+       "--database_path " + args.source_path + "/distorted/database.db \
+       --image_path " + args.source_path + "/input \
+       --ImageReader.single_camera 1 \
+       --ImageReader.camera_model " + args.camera + " \
+       --ImageReader.mask_path " + args.source_path + "/mask" + " \
+       --SiftExtraction.use_gpu " + str(use_gpu)+" --SiftExtraction.max_image_size 1500 --SiftExtraction.max_num_features 2800"
     exit_code = os.system(feat_extracton_cmd)
     if exit_code != 0:
-        logging.error(f"Feature extraction failed with code {exit_code}. Exiting.")
-        exit(exit_code)
+       logging.error(f"Feature extraction failed with code {exit_code}. Exiting.")
+       exit(exit_code)
 
     ## Feature matching
     feat_matching_cmd = colmap_command + " exhaustive_matcher \
-        --database_path " + args.source_path + "/distorted/database.db \
-        --SiftMatching.use_gpu " + str(use_gpu)
+       --database_path " + args.source_path + "/distorted/database.db \
+       --SiftMatching.use_gpu " + str(use_gpu)
     exit_code = os.system(feat_matching_cmd)
     if exit_code != 0:
-        logging.error(f"Feature matching failed with code {exit_code}. Exiting.")
-        exit(exit_code)
+       logging.error(f"Feature matching failed with code {exit_code}. Exiting.")
+       exit(exit_code)
+    os.makedirs(args.source_path + "/triangulator/model", exist_ok=True)
+    triangu_cmd= colmap_command+ f" point_triangulator \
+    --database_path {args.source_path}/distorted/database.db \
+    --image_path {args.source_path}/input \
+    --input_path {args.source_path}/txt \
+    --output_path {args.source_path}/triangulator/model"
 
+    exit_code = os.system(triangu_cmd)
+    if exit_code != 0:
+      logging.error(f"Feature matching failed with code {exit_code}. Exiting.")
+      exit(exit_code)
+    # 3. 手动创建初始模型（关键！）
+    # 确保已提前生成包含精确位姿的 cameras.txt 和 images.txt
+    # 并转换为二进制模型文件到 distorted/sparse 文件夹
+    # 示例代码（需补充实际路径）：
+    #os.system(f"colmap model_converter --input_path {args.source_path}/txt --output_path \
+    #          {args.source_path}/distorted/sparse --output_type BIN")
     ### Bundle adjustment
     # The default Mapper tolerance is unnecessarily large,
     # decreasing it speeds up bundle adjustment steps.
-    mapper_cmd = (colmap_command + " mapper \
-        --database_path " + args.source_path + "/distorted/database.db \
-        --image_path "  + args.source_path + "/input \
-        --output_path "  + args.source_path + "/distorted/sparse \
-        --Mapper.ba_global_function_tolerance=0.000001")
-    exit_code = os.system(mapper_cmd)
-    if exit_code != 0:
-        logging.error(f"Mapper failed with code {exit_code}. Exiting.")
-        exit(exit_code)
+    # mapper_cmd = (colmap_command + " mapper \
+    #     --database_path " + args.source_path + "/distorted/database.db \
+    #     --image_path "  + args.source_path + "/input \
+    #     --output_path "  + args.source_path + "/distorted/sparse \
+    #     --Mapper.ba_global_function_tolerance=0.000001 \ ")
+    #mapper_cmd = (colmap_command + " mapper \
+    #    --database_path " + args.source_path + "/distorted/database.db \
+    #    --image_path "  + args.source_path + "/input \
+    #    --output_path "  + args.source_path + "/distorted/sparse \
+    #    --Mapper.ba_global_function_tolerance=0.000001")
+
+    # mapper_cmd = (
+    #     colmap_command + " mapper "
+    #     "--database_path " + args.source_path + "/distorted/database.db "
+    #     "--image_path " + args.source_path + "/input "
+    #     "--input_path " + args.source_path + "/distorted/sparse "  # 加载手动模型
+    #     "--output_path " + args.source_path + "/distorted/sparse "
+    #     "--Mapper.ba_global_function_tolerance=0.000001 "
+    #     "--Mapper.fix_existing_images 1 "  # 固定已有图像的位姿
+    #     "--Mapper.ba_refine_focal_length 0 "  # 禁止优化焦距
+    #     "--Mapper.ba_refine_principal_point 0 "  # 禁止优化主点
+    #     "--Mapper.ba_refine_extra_params 0 "    # 禁止优化畸变参数
+    #     "--Mapper.tri_ignore_two_view_tracks 0" # 允许双视图三角化
+    # )
+    # exit_code = os.system(mapper_cmd)
+    # if exit_code != 0:
+    #    logging.error(f"Mapper failed with code {exit_code}. Exiting.")
+    #    exit(exit_code)
 
 ### Image undistortion
 ## We need to undistort our images into ideal pinhole intrinsics.
 img_undist_cmd = (colmap_command + " image_undistorter \
     --image_path " + args.source_path + "/input \
-    --input_path " + args.source_path + "/distorted/sparse/0 \
+    --input_path " + args.source_path + "/triangulator/model \
     --output_path " + args.source_path + "\
     --output_type COLMAP")
 exit_code = os.system(img_undist_cmd)
